@@ -1,0 +1,161 @@
+# steerdb
+
+A learned **steering layer** for the PostgreSQL query optimizer, in the style of Bao (SIGMOD 2021).
+
+steerdb doesn't replace the Postgres optimizer. For each query it asks Postgres for up to 8
+candidate plans, one per **hint set** (for example `enable_nestloop=off`), then uses a small
+learned model to predict which plan will actually run fastest. Every candidate is still a real
+Postgres plan, so a bad choice has a bounded cost. A safety guard falls back to the stock plan
+when the model isn't confident or a chosen plan runs too long.
+
+```
+SQL ─▶ plan under K hint sets (EXPLAIN, no execution) ─▶ featurize plan trees
+    ─▶ Tree-CNN predicts latency (+ uncertainty) ─▶ pick (argmin / Thompson) + safety guard
+    ─▶ execute ─▶ record (plan, latency) ─▶ periodic retrain
+```
+
+The full design (goals, alternatives, evaluation plan, risks) is in
+[ml_query_optimizer_design.md](ml_query_optimizer_design.md).
+Results are in [docs/results.md](docs/results.md).
+
+## Quickstart
+
+Requirements: Docker, Python 3.10+, bash, and about 12 GB of free disk for IMDB.
+
+```bash
+pip install -e ".[dev]"                     # CPU-only torch is enough
+
+docker compose up -d                        # Postgres 16 on localhost:5433, fixed config
+bash data/load_imdb.sh                      # fetch JOB + IMDB (~1.2 GB download), load, index, ANALYZE
+
+steerdb collect                             # Phase 0: 113 queries x 8 arms (resumable, hours)
+steerdb oracle-gap                          # go/no-go: is the best arm meaningfully faster?
+steerdb train --model lgbm                  # Phase 1 baseline
+steerdb train --model treecnn               # Phase 2 main model
+steerdb run --file workload/job/29a.sql     # route one query end to end
+python experiments/run_eval.py --overhead   # every table and figure in docs/results.md
+```
+
+Every command reads `STEERDB_DSN` (default `postgresql://postgres:steerdb@localhost:5433/imdb`).
+All generated state goes to `runs/`: the experience store `runs/experience.sqlite` and models
+in `runs/models/`.
+
+### Smoke test without the 3.6 GB dataset
+
+`data/make_synthetic_imdb.py` builds a small database with the same 21-table schema, the real
+dimension values that JOB predicates look for, and skewed foreign keys. The whole pipeline runs
+on it in a few minutes. CI does this on every push. The numbers it produces say nothing about
+real performance.
+
+```bash
+bash workload/fetch_job.sh
+python data/make_synthetic_imdb.py --scale 0.5
+steerdb collect --warmup 0 --runs 1 --timeout-ms 5000
+steerdb bench --no-ablations --out runs/eval --markdown runs/results.md
+```
+
+## Components
+
+| Module | Role |
+|---|---|
+| [steerdb/arms.py](steerdb/arms.py) | The 8 hint sets. Each arm resets every planner GUC it doesn't set, so arms never leak into each other |
+| [steerdb/plan_gen.py](steerdb/plan_gen.py) | `EXPLAIN (FORMAT JSON)` per arm, deduplicated by a structural plan hash that ignores cost numbers |
+| [steerdb/featurize.py](steerdb/featurize.py) | Plan node → vector (node type, standardized log rows/cost, width, relation, filter flags); plan → binary tree tensor; flat summary for LightGBM |
+| [steerdb/models/lgbm_baseline.py](steerdb/models/lgbm_baseline.py) | Phase 1: LightGBM ensemble on the flat summary |
+| [steerdb/models/tree_conv.py](steerdb/models/tree_conv.py) | Phase 2: Tree-CNN (3 tree-conv layers → dynamic max-pool → 2 FC), 161k parameters, ensemble for uncertainty |
+| [steerdb/selector.py](steerdb/selector.py) | Greedy argmin or Thompson sampling, plus the safety guard |
+| [steerdb/executor.py](steerdb/executor.py) | Runs a query under an arm with a timeout (warm-up + median of 3; timeouts become censored labels) |
+| [steerdb/store.py](steerdb/store.py) | SQLite experience store |
+| [steerdb/router.py](steerdb/router.py) | Inference path used by `steerdb run` |
+| [steerdb/online.py](steerdb/online.py) | Online loop: choose via Thompson sampling, execute, record, retrain every 25 queries. Runs live or as a fast replay of Phase 0 latencies |
+| [steerdb/evaluate.py](steerdb/evaluate.py), [steerdb/report.py](steerdb/report.py) | Offline evaluation of all policies, metrics, ablations, markdown report |
+
+### Hint sets
+
+| Arm | Setting | Intent |
+|---|---|---|
+| 0 | default | baseline Postgres |
+| 1 | `enable_nestloop=off` | avoid nested loops when row estimates are too low |
+| 2 | `enable_hashjoin=off` | force merge or nested loop |
+| 3 | `enable_mergejoin=off` | hash or nested loop only |
+| 4 | `enable_nestloop=off, enable_mergejoin=off` | hash joins only |
+| 5 | `enable_hashjoin=off, enable_mergejoin=off` | nested loops only |
+| 6 | `enable_seqscan=off` | favor index scans |
+| 7 | `enable_indexscan=off, enable_bitmapscan=off` | favor sequential scans |
+
+### Safety guard
+
+1. An untrained model always picks arm 0.
+2. The router leaves arm 0 only if the predicted speedup is at least 5% (`--min-gain`).
+3. A non-default plan runs with `statement_timeout = 2 × arm-0 latency` (minimum 1 s). If it
+   times out, it is cancelled, arm 0 is rerun, and the failure is recorded as a negative example.
+   The offline evaluation simulates this cost exactly (timeout + arm-0 latency).
+4. Every test query where steerdb is more than 20% slower than Postgres is listed in the results.
+
+## Evaluation methodology
+
+- **Split by template, not randomly.** Train on JOB templates 1–25 and test on the unseen
+  templates 26–33. Variants such as `16a`/`16b`/`16c` are near-duplicates, so a random split
+  leaks. The report includes the leaky random split next to the honest one to show the inflation.
+- **Offline policy evaluation.** Phase 0 executes every query under every arm, so any policy
+  (stock, oracle, random, cost-only, LightGBM, Tree-CNN) can be scored from recorded latencies
+  without rerunning queries.
+- **Baselines:** stock Postgres (arm 0), best-arm oracle (the upper bound), random arm,
+  cost-only re-ranking (lowest optimizer cost), and LightGBM.
+- **Metrics:** total workload time; p50/p95/p99; regret vs. the oracle; per-query speedup
+  distribution; number of queries more than 20% slower than Postgres; planning and inference
+  overhead.
+- **Ablations:** number of arms (2/4/8), amount of training data (25/50/100% of templates),
+  Thompson vs. greedy online learning, and seen vs. unseen templates.
+
+### Measurement setup
+
+Fixed server settings are in [docker-compose.yml](docker-compose.yml): `shared_buffers=2GB`,
+`work_mem=64MB`, `effective_cache_size=4GB`, `random_page_cost=1.1`. Every connection also pins
+three settings, whatever the server config ([steerdb/config.py](steerdb/config.py)):
+
+- `geqo_seed=0`: queries with 12 or more relations go through the genetic optimizer, which is deterministic for a fixed seed. Exhaustive search on JOB's 17-way joins took over 11 s to plan across 8 arms.
+- `max_parallel_workers_per_gather=0` and `jit=off`: less timing noise.
+
+Labels come from warm-cache runs: 1 discarded warm-up, then the median of 3. The statement
+timeout is 5 minutes. Use a single client with nothing else running. Record your hardware in
+`docs/results.md` (the report fills in platform and CPU automatically).
+
+## CLI
+
+```
+steerdb collect     [--queries 1a,2b] [--arms 0,1,4] [--warmup 1] [--runs 3] [--timeout-ms 300000]
+steerdb oracle-gap  [--queries ...]
+steerdb train       --model lgbm|treecnn [--epochs N] [--seed S] [--out DIR]
+steerdb run         "SQL" | --file q.sql  [--model DIR] [--min-gain 0.05] [--no-execute]
+steerdb online      [--model treecnn] [--mode thompson|greedy] [--online-epochs 5] [--retrain-every 25] [--live]
+steerdb bench       [--model treecnn] [--no-ablations] [--overhead] [--out DIR] [--markdown FILE]
+```
+
+## Development
+
+```bash
+pytest -q                 # unit tests, no database needed
+ruff check . && ruff format --check .
+```
+
+The tests cover the design doc's featurization worked example, arm definitions, plan-hash
+deduplication, selector and guard behavior, Tree-CNN mechanics (child gathering, batching,
+per-plan pooling), model save/load, the offline evaluator (including the simulated timeout
+fallback), and the online loop on a synthetic latency table with known headroom.
+
+## Limitations
+
+- Hint sets only reshape what Postgres already considers, so the best-arm oracle caps the gain.
+  Check `steerdb oracle-gap` before trusting any model result.
+- About 900 labelled executions is a small dataset. Ensembles and the LightGBM baseline are
+  there as sanity checks against overfitting.
+- Read-only, single-node workloads only. No DDL or updates, and no C extension.
+
+## References
+
+- R. Marcus et al., *Bao: Making Learned Query Optimization Practical*, SIGMOD 2021
+- R. Marcus et al., *Neo: A Learned Query Optimizer*, VLDB 2019
+- Z. Yang et al., *Balsa: Learning a Query Optimizer Without Expert Demonstrations*, SIGMOD 2022
+- V. Leis et al., *How Good Are Query Optimizers, Really?*, VLDB 2015 (Join Order Benchmark)
+- L. Mou et al., *Convolutional Neural Networks over Tree Structures for Programming Language Processing*, AAAI 2016

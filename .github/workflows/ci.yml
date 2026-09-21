@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install (CPU-only torch)
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev]"
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Unit tests (no database)
+        run: pytest -q
+
+  smoke:
+    # End-to-end on a small synthetic IMDB-schema database: collect -> train -> run -> bench.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: steerdb
+          POSTGRES_DB: imdb
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      STEERDB_DSN: postgresql://postgres:steerdb@localhost:5433/imdb
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - name: Fetch JOB and build synthetic database
+        run: |
+          bash workload/fetch_job.sh
+          python data/make_synthetic_imdb.py --scale 0.2
+      - name: Collect (subset of templates, 1 run each)
+        run: >
+          steerdb collect --warmup 0 --runs 1 --timeout-ms 5000
+          --queries 1a,1b,2a,2b,3a,3b,4a,4b,5a,6a,6b,7a,8a,9a,10a,11a,12a,13a,26a,27a,28a,29a,30a,31a,32a,33a
+      - name: Train, route, bench
+        run: |
+          steerdb oracle-gap
+          steerdb train --model lgbm
+          steerdb train --model treecnn --epochs 20
+          steerdb run --file workload/job/1a.sql
+          steerdb bench --epochs 20 --online-epochs 2 --no-ablations --out runs/eval --markdown runs/results.md
