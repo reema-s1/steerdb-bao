@@ -33,7 +33,16 @@ def cmd_collect(args) -> None:
 
     arms = tuple(get_arm(a) for a in parse_arm_ids(args.arms))
     with connect(args.dsn) as conn:
-        collect(conn, _store(args), _queries(args), arms, args.warmup, args.runs, args.timeout_ms)
+        collect(
+            conn,
+            _store(args),
+            _queries(args),
+            arms,
+            args.warmup,
+            args.runs,
+            args.timeout_ms,
+            backup=args.backup,
+        )
 
 
 def cmd_oracle_gap(args) -> None:
@@ -186,6 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--warmup", type=int, default=config.WARMUP_RUNS)
     s.add_argument("--runs", type=int, default=config.MEASURED_RUNS)
     s.add_argument("--timeout-ms", type=int, default=config.STATEMENT_TIMEOUT_MS)
+    s.add_argument("--backup", help="copy the store here after every query (e.g. Google Drive)")
     s.set_defaults(func=cmd_collect)
 
     s = sub.add_parser("oracle-gap", help="go/no-go: best arm vs stock Postgres")

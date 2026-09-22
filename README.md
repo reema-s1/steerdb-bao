@@ -54,6 +54,22 @@ steerdb collect --warmup 0 --runs 1 --timeout-ms 5000
 steerdb bench --no-ablations --out runs/eval --markdown runs/results.md
 ```
 
+### Running everything on Google Colab (no local disk or Docker needed)
+
+[notebooks/run_on_colab.ipynb](notebooks/run_on_colab.ipynb) runs the full pipeline on the
+real IMDB/JOB data on a free Colab CPU runtime:
+
+1. Installs Postgres 16 with [scripts/colab_postgres.sh](scripts/colab_postgres.sh), using the
+   same settings as `docker-compose.yml`.
+2. Loads IMDB with `PG_MODE=local bash data/load_imdb.sh`.
+3. Runs `steerdb collect`, `train`, and `run`, then `experiments/run_eval.py`.
+
+Anything that must survive a session reset lives in `MyDrive/steerdb/`: the cached 1.2 GB
+download, the experience store (`collect --backup` copies it there after every query), models,
+and results. After a disconnect, choose *Run all* again. IMDB is reloaded (about 30 min) and
+collection resumes where it stopped. Colab VMs are shared, so latencies are noisier than on a
+quiet dedicated machine; the report records the machine it ran on.
+
 ### Training on a free GPU (Colab / Kaggle)
 
 Training needs only the experience store, not Postgres. Collect locally, then train anywhere.
@@ -139,7 +155,7 @@ timeout is 5 minutes. Use a single client with nothing else running. Record your
 ## CLI
 
 ```
-steerdb collect     [--queries 1a,2b] [--arms 0,1,4] [--warmup 1] [--runs 3] [--timeout-ms 300000]
+steerdb collect     [--queries 1a,2b] [--arms 0,1,4] [--warmup 1] [--runs 3] [--timeout-ms 300000] [--backup PATH]
 steerdb oracle-gap  [--queries ...]
 steerdb train       --model lgbm|treecnn [--epochs N] [--seed S] [--out DIR] [--device auto|cpu|cuda]
 steerdb run         "SQL" | --file q.sql  [--model DIR] [--min-gain 0.05] [--no-execute]

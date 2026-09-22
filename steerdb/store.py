@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -69,6 +70,18 @@ class ExperienceStore:
             ),
         )
         self.db.commit()
+
+    def backup_to(self, path: Path | str) -> None:
+        """Consistent snapshot of the store (e.g. to Google Drive), written atomically."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        dst = sqlite3.connect(str(tmp))
+        try:
+            self.db.backup(dst)
+        finally:
+            dst.close()
+        os.replace(tmp, path)
 
     def delete_source(self, source: str) -> None:
         self.db.execute("DELETE FROM executions WHERE source = ?", (source,))

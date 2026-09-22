@@ -20,3 +20,6 @@ runs/
 Thumbs.db
 .vscode/
 .idea/
+
+# Code bundle for uploading to Colab (git archive -o steerdb.zip HEAD)
+steerdb.zip

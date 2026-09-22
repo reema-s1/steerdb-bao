@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from . import config
 from .arms import ARMS, Arm
@@ -21,6 +22,7 @@ def collect(
     runs: int = config.MEASURED_RUNS,
     timeout_ms: int = config.STATEMENT_TIMEOUT_MS,
     log=None,
+    backup: Path | str | None = None,
 ) -> None:
     """Arms whose plan is identical to an already-executed arm of the same query are not
     re-executed; they reuse that measurement (same operator tree => same execution)."""
@@ -51,4 +53,6 @@ def collect(
             measured[h] = obs
             flag = " TIMEOUT" if res.timed_out else ""
             log(f"[{done}/{total}] {q.name} arm{arm.id}: {res.latency_ms:.1f} ms{flag}")
+        if backup:
+            store.backup_to(backup)
     log(f"collection finished in {time.perf_counter() - t_start:.0f}s")
