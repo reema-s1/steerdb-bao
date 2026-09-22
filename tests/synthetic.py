@@ -35,11 +35,14 @@ def latency(join: str, rows: float) -> float:
 
 
 def synthetic_queries(n_templates: int = 33, variants: str = "abc") -> list[Query]:
-    return [Query(f"{t}{v}", t, f"SELECT {t}") for t in range(1, n_templates + 1) for v in variants]
+    return [
+        Query(f"{t}{v}", str(t), f"SELECT {t}") for t in range(1, n_templates + 1) for v in variants
+    ]
 
 
 def query_rows(q: Query) -> float:
-    return 10.0 * (1 + (q.template * 7 + ord(q.name[-1])) % 40) ** 2
+    t = int("".join(c for c in q.template if c.isdigit()))
+    return 10.0 * (1 + (t * 7 + ord(q.name[-1])) % 40) ** 2
 
 
 def build_store(queries: list[Query]) -> ExperienceStore:

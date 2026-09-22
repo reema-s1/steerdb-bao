@@ -11,7 +11,8 @@ DSN = os.environ.get("STEERDB_DSN", "postgresql://postgres:steerdb@localhost:543
 RUNS_DIR = Path(os.environ.get("STEERDB_RUNS", REPO_ROOT / "runs"))
 STORE_PATH = Path(os.environ.get("STEERDB_STORE", RUNS_DIR / "experience.sqlite"))
 MODELS_DIR = RUNS_DIR / "models"
-WORKLOAD_DIR = Path(os.environ.get("STEERDB_WORKLOAD", REPO_ROOT / "workload" / "job"))
+# One or more query directories, separated by "," (e.g. "workload/job,workload/ceb").
+WORKLOAD_DIR = os.environ.get("STEERDB_WORKLOAD", str(REPO_ROOT / "workload" / "job"))
 
 # Session settings pinned on every connection, independent of server config, so that
 # plans are deterministic and latencies are comparable:
@@ -31,4 +32,4 @@ MEASURED_RUNS = int(os.environ.get("STEERDB_RUNS_PER_QUERY", "3"))
 STATEMENT_TIMEOUT_MS = int(os.environ.get("STEERDB_TIMEOUT_MS", str(5 * 60 * 1000)))
 
 # Template split: train on templates 1-25, test on unseen templates 26-33.
-TEST_TEMPLATES = tuple(range(26, 34))
+TEST_TEMPLATES = tuple(str(t) for t in range(26, 34))

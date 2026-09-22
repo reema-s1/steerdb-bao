@@ -47,12 +47,22 @@ def cmd_collect(args) -> None:
 
 def cmd_oracle_gap(args) -> None:
     from .evaluate import oracle_gap
+    from .report import workload_of
 
-    store = _store(args)
-    gap = oracle_gap(store.bootstrap_table(), [q.name for q in _queries(args)])
+    table = _store(args).bootstrap_table()
+    names = [q.name for q in _queries(args)]
+    gap = oracle_gap(table, names)
     print(json.dumps(gap, indent=2))
-    verdict = "GO" if gap["oracle_improvement"] >= 0.15 else "NO-GO (headroom < 15%)"
-    print(f"oracle improvement {gap['oracle_improvement']:.1%} -> {verdict}")
+    groups = {wl: [n for n in names if workload_of(n) == wl] for wl in ("job", "ceb")}
+    for wl, members in [("all", names)] + [(k, v) for k, v in groups.items() if v]:
+        g = oracle_gap(table, members)
+        if not g["n_queries"]:
+            continue
+        verdict = "GO" if g["oracle_improvement"] >= 0.15 else "NO-GO (headroom < 15%)"
+        print(
+            f"{wl.upper():>4}: {g['n_queries']} queries, oracle improvement"
+            f" {g['oracle_improvement']:.1%} -> {verdict}"
+        )
 
 
 def cmd_train(args) -> None:
@@ -139,6 +149,7 @@ def cmd_bench(args) -> None:
         ablations=not args.no_ablations,
         online_epochs=args.online_epochs,
         online_train_epochs=args.online_train_epochs,
+        folds=args.folds,
         seed=args.seed,
         model_kwargs=kwargs,
         overhead=overhead,
@@ -186,7 +197,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="steerdb", description=__doc__)
     p.add_argument("--dsn", default=config.DSN, help="Postgres DSN (env STEERDB_DSN)")
     p.add_argument("--store", default=str(config.STORE_PATH), help="experience store (SQLite)")
-    p.add_argument("--workload", default=str(config.WORKLOAD_DIR), help="directory of JOB *.sql")
+    p.add_argument(
+        "--workload",
+        default=config.WORKLOAD_DIR,
+        help="query directories, comma-separated (e.g. workload/job,workload/ceb)",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("collect", help="Phase 0: execute every query under every arm")
@@ -229,6 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--online-train-epochs", type=int, default=25, help="Tree-CNN epochs per online retrain"
     )
+    s.add_argument("--folds", type=int, default=5, help="leave-templates-out CV folds")
     s.add_argument("--no-ablations", action="store_true")
     s.add_argument(
         "--overhead", action="store_true", help="measure planning/inference overhead (needs DB)"

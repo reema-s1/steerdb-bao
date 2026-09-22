@@ -2,10 +2,14 @@
 
 Safety guard (design doc section 6.6):
   1. Untrained model -> arm 0.
-  2. Only deviate from arm 0 if the predicted speedup is at least `min_gain`
-     (exploit mode only; exploration is allowed to try uncertain arms).
-  3. The chosen plan runs with statement_timeout = timeout_factor x arm-0 latency; on timeout
-     the caller cancels, reruns arm 0 and records the failure as a negative example.
+  2. Pessimistic deviation (exploit mode): leave arm 0 only if the predicted speedup still
+     exceeds `min_gain` after subtracting `guard_k` standard deviations of the ensemble's
+     disagreement:  (mu_0 - mu_c) - guard_k * sqrt(sd_c^2 + sd_0^2) > log(1 + min_gain).
+     Defaults come from leave-template-out cross-validation on JOB's training templates.
+     (Exploration in Thompson mode is allowed to try uncertain arms.)
+  3. The chosen plan runs with statement_timeout = timeout_factor x arm-0 latency (no large
+     floor: with a 1 s floor a mistake on a 100 ms query cost 10x); on timeout the caller
+     cancels, reruns arm 0 and records the failure as a negative example.
 """
 
 from __future__ import annotations
@@ -31,14 +35,16 @@ class Selector:
         self,
         mode: str = "greedy",
         min_gain: float = 0.05,
+        guard_k: float = 1.0,
         timeout_factor: float = 2.0,
-        timeout_floor_ms: float = 1000.0,
+        timeout_floor_ms: float = 1.0,
         seed: int = 0,
     ) -> None:
         if mode not in ("greedy", "thompson"):
             raise ValueError(f"unknown selector mode {mode!r}")
         self.mode = mode
         self.min_gain = min_gain
+        self.guard_k = guard_k
         self.timeout_factor = timeout_factor
         self.timeout_floor_ms = timeout_floor_ms
         self.rng = np.random.default_rng(seed)
@@ -64,11 +70,14 @@ class Selector:
             reason = "model" if idx == int(np.argmin(mu)) else "explore"
             return Decision(idx, arms[idx], reason, predicted_ms)
 
-        idx = int(np.argmin(mu))
-        if idx != default_idx:
-            predicted_speedup = math.exp(mu[default_idx] - mu[idx])
-            if predicted_speedup < 1.0 + self.min_gain:
-                return Decision(default_idx, arms[default_idx], "guard", predicted_ms)
+        sd = np.zeros_like(mu) if sigma is None else np.asarray(sigma, dtype=np.float64)
+        margin = (mu[default_idx] - mu) - self.guard_k * np.sqrt(sd**2 + sd[default_idx] ** 2)
+        margin[default_idx] = -np.inf
+        idx = int(np.argmax(margin))
+        if len(arms) == 1 or margin[idx] <= math.log(1.0 + self.min_gain):
+            best = int(np.argmin(mu))
+            reason = "model" if best == default_idx else "guard"
+            return Decision(default_idx, arms[default_idx], reason, predicted_ms)
         return Decision(idx, arms[idx], "model", predicted_ms)
 
     def timeout_ms(self, baseline_ms: float | None) -> int | None:

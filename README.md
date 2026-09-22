@@ -62,7 +62,12 @@ real IMDB/JOB data on a free Colab CPU runtime:
 1. Installs Postgres 16 with [scripts/colab_postgres.sh](scripts/colab_postgres.sh), using the
    same settings as `docker-compose.yml`.
 2. Loads IMDB with `PG_MODE=local bash data/load_imdb.sh`.
-3. Runs `steerdb collect`, `train`, and `run`, then `experiments/run_eval.py`.
+3. Generates CEB queries (see [Workloads](#workloads)) and keeps them in Drive.
+4. Runs `steerdb collect`, then `train` and `experiments/run_eval.py`.
+
+A settings cell at the top controls two runs. The **pilot** (5 CEB queries per template)
+stops after printing the oracle gap per workload. The **full run** (`CEB_PER_TEMPLATE = 60`,
+`RUN_EVALUATION = True`) collects only the new queries and then trains and evaluates.
 
 Anything that must survive a session reset lives in `MyDrive/steerdb/`: the cached 1.2 GB
 download, the experience store (`collect --backup` copies it there after every query), models,
@@ -84,6 +89,26 @@ steerdb bench --out runs/eval                     # every Tree-CNN in the evalua
 
 Upload `runs/experience.sqlite` to the notebook, then download `runs/models/` back into `runs/`.
 Weights are saved as CPU tensors, so a GPU-trained model loads on a laptop without CUDA.
+
+## Workloads
+
+- **JOB** (113 queries, 33 templates; Leis et al., VLDB 2015), fetched by
+  `workload/fetch_job.sh` at a pinned commit.
+- **CEB-style** queries from the 8 complex (7-16 table) IMDB templates of the Cardinality
+  Estimation Benchmark (Negi et al.; MIT license). CEB's pre-generated query files are no
+  longer downloadable (dead Dropbox links), so [data/gen_ceb_queries.py](data/gen_ceb_queries.py)
+  runs CEB's own generator (`data/fetch_ceb.sh`, pinned commit) against the loaded IMDB
+  database. It samples real predicate values, writes `workload/ceb/ceb<template>_<n>.sql`, and
+  only ever adds queries, so a pilot set stays fixed when the workload grows. It also patches
+  two missing upstream imports and caps the generator's retry loop.
+
+Point any command at several workloads with `--workload workload/job,workload/ceb` (or the
+`STEERDB_WORKLOAD` variable). One experience store holds both workloads.
+
+Why CEB: on JOB with Postgres 16, foreign-key indexes and a warm cache, stock Postgres was
+already the best arm for 105 of 113 queries. The best-arm oracle was only 8.5% faster in total,
+below the design doc's 15% go/no-go bar. CEB was designed to produce the cardinality
+misestimates that make plan choice matter.
 
 ## Components
 
@@ -117,17 +142,28 @@ Weights are saved as CPU tensors, so a GPU-trained model loads on a laptop witho
 ### Safety guard
 
 1. An untrained model always picks arm 0.
-2. The router leaves arm 0 only if the predicted speedup is at least 5% (`--min-gain`).
-3. A non-default plan runs with `statement_timeout = 2 × arm-0 latency` (minimum 1 s). If it
-   times out, it is cancelled, arm 0 is rerun, and the failure is recorded as a negative example.
-   The offline evaluation simulates this cost exactly (timeout + arm-0 latency).
+2. **Pessimistic deviation.** The router leaves arm 0 only if the predicted speedup still
+   exceeds 5% after subtracting one standard deviation of the ensemble's disagreement:
+   `(mu_0 - mu_c) - k * sqrt(sd_c^2 + sd_0^2) > log(1.05)`, with `k = 1`. Both values were
+   chosen by leave-template-out cross-validation on training templates only. On JOB this guard
+   brought the Tree-CNN from 2.47× slower than Postgres to 1.01×.
+3. A non-default plan runs with `statement_timeout = 2 × arm-0 latency`. If it times out, it
+   is cancelled, arm 0 is rerun, and the failure is recorded as a negative example. The offline
+   evaluation simulates this cost exactly (timeout + arm-0 latency). An earlier 1-second
+   minimum timeout turned small mistakes on 100 ms queries into 10× slowdowns, so it was removed.
 4. Every test query where steerdb is more than 20% slower than Postgres is listed in the results.
 
 ## Evaluation methodology
 
-- **Split by template, not randomly.** Train on JOB templates 1–25 and test on the unseen
-  templates 26–33. Variants such as `16a`/`16b`/`16c` are near-duplicates, so a random split
-  leaks. The report includes the leaky random split next to the honest one to show the inflation.
+- **Unseen templates, cross-validated.** Templates are shuffled and dealt into 5 folds. Each
+  fold is predicted by models trained only on the other folds, so every query is evaluated once
+  by a model that never saw its template. CEB queries are grouped by join graph (`ceb9a_*` and
+  `ceb9b_*` share a fold). Variants such as `16a`/`16b`/`16c` are near-duplicates, so a random
+  split would leak; the report shows that leaky split next to the honest one.
+- **Why not one fixed split.** The design doc's split (train JOB 1–25, test 26–33) turned out
+  lopsided: JOB's templates grow with their number, so 18 of the 23 test queries join 12 or
+  more tables, versus 2 of the 90 training queries. That tests extrapolation to unseen plan
+  shapes, not the typical case, and it leaves just 23 queries to measure with.
 - **Offline policy evaluation.** Phase 0 executes every query under every arm, so any policy
   (stock, oracle, random, cost-only, LightGBM, Tree-CNN) can be scored from recorded latencies
   without rerunning queries.
@@ -155,12 +191,12 @@ timeout is 5 minutes. Use a single client with nothing else running. Record your
 ## CLI
 
 ```
-steerdb collect     [--queries 1a,2b] [--arms 0,1,4] [--warmup 1] [--runs 3] [--timeout-ms 300000] [--backup PATH]
+steerdb [--workload DIRS] collect [--queries 1a,2b] [--arms 0,1,4] [--warmup 1] [--runs 3] [--timeout-ms 300000] [--backup PATH]
 steerdb oracle-gap  [--queries ...]
 steerdb train       --model lgbm|treecnn [--epochs N] [--seed S] [--out DIR] [--device auto|cpu|cuda]
 steerdb run         "SQL" | --file q.sql  [--model DIR] [--min-gain 0.05] [--no-execute]
 steerdb online      [--model treecnn] [--mode thompson|greedy] [--online-epochs 5] [--retrain-every 25] [--live]
-steerdb bench       [--model treecnn] [--no-ablations] [--overhead] [--out DIR] [--markdown FILE]
+steerdb bench       [--model treecnn] [--folds 5] [--no-ablations] [--overhead] [--out DIR] [--markdown FILE]
 ```
 
 ## Development
@@ -178,6 +214,7 @@ fallback), and the online loop on a synthetic latency table with known headroom.
 ## Limitations
 
 - Hint sets only reshape what Postgres already considers, so the best-arm oracle caps the gain.
+  On JOB (Postgres 16, warm cache) that cap was only 8.5%.
   Check `steerdb oracle-gap` before trusting any model result.
 - About 900 labelled executions is a small dataset. Ensembles and the LightGBM baseline are
   there as sanity checks against overfitting.
@@ -189,4 +226,5 @@ fallback), and the online loop on a synthetic latency table with known headroom.
 - R. Marcus et al., *Neo: A Learned Query Optimizer*, VLDB 2019
 - Z. Yang et al., *Balsa: Learning a Query Optimizer Without Expert Demonstrations*, SIGMOD 2022
 - V. Leis et al., *How Good Are Query Optimizers, Really?*, VLDB 2015 (Join Order Benchmark)
+- P. Negi et al., *Flow-Loss: Learning Cardinality Estimates That Matter*, VLDB 2021 (introduces CEB); templates and generator from github.com/learnedsystems/CEB
 - L. Mou et al., *Convolutional Neural Networks over Tree Structures for Programming Language Processing*, AAAI 2016
