@@ -76,6 +76,15 @@ def collate(trees: list[TreeTensor]) -> tuple[torch.Tensor, torch.Tensor, torch.
     )
 
 
+def resolve_device(device: str = "auto") -> torch.device:
+    """'auto' -> CUDA if available, else CPU."""
+    if device == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError("device 'cuda' requested but no GPU is available")
+    return torch.device(device)
+
+
 class TreeCNNModel(ValueModel):
     kind = "treecnn"
 
@@ -87,8 +96,10 @@ class TreeCNNModel(ValueModel):
         lr: float = 1e-3,
         weight_decay: float = 1e-4,
         seed: int = 0,
+        device: str = "auto",
     ) -> None:
         super().__init__()
+        self.device = resolve_device(device)
         self.n_members = n_members
         self.epochs = epochs
         self.batch_size = batch_size
@@ -103,6 +114,9 @@ class TreeCNNModel(ValueModel):
         return sum(p.numel() for p in TreeCNN().parameters())
 
     def fit(self, plans, latencies_ms) -> None:
+        if self.device.type != "cpu":
+            self._fit(plans, latencies_ms)
+            return
         # Tiny tensors: many threads cost more in synchronization than they save.
         prev_threads = torch.get_num_threads()
         torch.set_num_threads(min(4, prev_threads))
@@ -116,7 +130,9 @@ class TreeCNNModel(ValueModel):
         trees = [self.featurizer.plan_to_tree(p) for p in plans]
         y = to_log(latencies_ms)
         self.y_mean, self.y_std = float(y.mean()), float(y.std() or 1.0)
-        y_norm = torch.tensor((y - self.y_mean) / self.y_std, dtype=torch.float32)
+        y_norm = torch.tensor(
+            (y - self.y_mean) / self.y_std, dtype=torch.float32, device=self.device
+        )
 
         self.members = []
         for m in range(self.n_members):
@@ -127,14 +143,14 @@ class TreeCNNModel(ValueModel):
                 if self.n_members > 1
                 else np.arange(len(trees))
             )
-            net = TreeCNN()
+            net = TreeCNN().to(self.device)
             opt = torch.optim.AdamW(net.parameters(), lr=self.lr, weight_decay=self.weight_decay)
             net.train()
             for _ in range(self.epochs):
                 order = rng.permutation(sample)
                 for start in range(0, len(order), self.batch_size):
                     batch = order[start : start + self.batch_size]
-                    x, idx, pid, n = collate([trees[i] for i in batch])
+                    x, idx, pid, n = self._to_device(collate([trees[i] for i in batch]))
                     loss = nn.functional.mse_loss(net(x, idx, pid, n), y_norm[batch])
                     opt.zero_grad()
                     loss.backward()
@@ -146,15 +162,21 @@ class TreeCNNModel(ValueModel):
     @torch.no_grad()
     def predict(self, plans):
         trees = [self.featurizer.plan_to_tree(p) for p in plans]
-        x, idx, pid, n = collate(trees)
-        preds = torch.stack([net(x, idx, pid, n) for net in self.members]).numpy()
+        x, idx, pid, n = self._to_device(collate(trees))
+        preds = torch.stack([net(x, idx, pid, n) for net in self.members]).cpu().numpy()
         preds = preds * self.y_std + self.y_mean
         return preds.mean(axis=0), preds.std(axis=0)
+
+    def _to_device(self, batch):
+        x, idx, pid, n = batch
+        return x.to(self.device), idx.to(self.device), pid.to(self.device), n
 
     def save(self, directory: Path) -> None:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
-        torch.save([net.state_dict() for net in self.members], directory / "members.pt")
+        # Always save CPU tensors, so a model trained on a GPU (Colab/Kaggle) loads anywhere.
+        states = [{k: v.cpu() for k, v in net.state_dict().items()} for net in self.members]
+        torch.save(states, directory / "members.pt")
         meta = {
             "kind": self.kind,
             "n_members": self.n_members,
@@ -170,7 +192,7 @@ class TreeCNNModel(ValueModel):
         (directory / "meta.json").write_text(json.dumps(meta))
 
     @classmethod
-    def load(cls, directory: Path) -> TreeCNNModel:
+    def load(cls, directory: Path, device: str = "auto") -> TreeCNNModel:
         directory = Path(directory)
         meta = json.loads((directory / "meta.json").read_text())
         m = cls(
@@ -180,13 +202,15 @@ class TreeCNNModel(ValueModel):
             meta["lr"],
             meta["weight_decay"],
             meta["seed"],
+            device,
         )
         m.y_mean, m.y_std = meta["y_mean"], meta["y_std"]
         m.featurizer = Featurizer.from_dict(meta["featurizer"])
         m.members = []
-        for sd in torch.load(directory / "members.pt", weights_only=True):
+        for sd in torch.load(directory / "members.pt", map_location="cpu", weights_only=True):
             net = TreeCNN()
             net.load_state_dict(sd)
+            net.to(m.device)
             net.eval()
             m.members.append(net)
         m.trained = True

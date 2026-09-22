@@ -54,6 +54,21 @@ steerdb collect --warmup 0 --runs 1 --timeout-ms 5000
 steerdb bench --no-ablations --out runs/eval --markdown runs/results.md
 ```
 
+### Training on a free GPU (Colab / Kaggle)
+
+Training needs only the experience store, not Postgres. Collect locally, then train anywhere.
+[notebooks/train_gpu.ipynb](notebooks/train_gpu.ipynb) doesn't reimplement anything: it clones the
+repo (or unpacks a zip made with `git archive -o steerdb.zip HEAD`), runs `pip install -e .`, and
+calls the CLI:
+
+```bash
+steerdb train --model treecnn --device cuda      # --device auto (default) picks the GPU if present
+steerdb bench --out runs/eval                     # every Tree-CNN in the evaluation uses the GPU
+```
+
+Upload `runs/experience.sqlite` to the notebook, then download `runs/models/` back into `runs/`.
+Weights are saved as CPU tensors, so a GPU-trained model loads on a laptop without CUDA.
+
 ## Components
 
 | Module | Role |
@@ -126,7 +141,7 @@ timeout is 5 minutes. Use a single client with nothing else running. Record your
 ```
 steerdb collect     [--queries 1a,2b] [--arms 0,1,4] [--warmup 1] [--runs 3] [--timeout-ms 300000]
 steerdb oracle-gap  [--queries ...]
-steerdb train       --model lgbm|treecnn [--epochs N] [--seed S] [--out DIR]
+steerdb train       --model lgbm|treecnn [--epochs N] [--seed S] [--out DIR] [--device auto|cpu|cuda]
 steerdb run         "SQL" | --file q.sql  [--model DIR] [--min-gain 0.05] [--no-execute]
 steerdb online      [--model treecnn] [--mode thompson|greedy] [--online-epochs 5] [--retrain-every 25] [--live]
 steerdb bench       [--model treecnn] [--no-ablations] [--overhead] [--out DIR] [--markdown FILE]

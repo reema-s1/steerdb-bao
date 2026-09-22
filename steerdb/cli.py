@@ -56,11 +56,16 @@ def cmd_train(args) -> None:
     arm_ids = tuple(a.id for a in ARMS)
     table = store.bootstrap_table()
     train_names = set(complete_queries(table, [q.name for q in train], arm_ids))
-    kwargs = {"epochs": args.epochs} if args.model == "treecnn" and args.epochs else {}
+    kwargs = {}
+    if args.model == "treecnn":
+        kwargs["device"] = args.device
+        if args.epochs:
+            kwargs["epochs"] = args.epochs
     model = train_model(args.model, store, train_names, seed=args.seed, **kwargs)
     out = Path(args.out or config.MODELS_DIR / args.model)
     model.save(out)
-    print(f"trained {args.model} on {len(train_names)} queries -> {out}")
+    on = f" on {model.device}" if hasattr(model, "device") else ""
+    print(f"trained {args.model}{on} using {len(train_names)} queries -> {out}")
 
     test_names = complete_queries(table, [q.name for q in test], arm_ids)
     if test_names:
@@ -192,6 +197,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--epochs", type=int, help="Tree-CNN epochs")
     s.add_argument("--seed", type=int, default=0)
     s.add_argument("--out", help="output directory (default runs/models/<model>)")
+    s.add_argument(
+        "--device",
+        default="auto",
+        help="Tree-CNN device: auto | cpu | cuda (auto = GPU if present)",
+    )
     s.set_defaults(func=cmd_train)
 
     s = sub.add_parser("run", help="route one query: plan all arms, pick one, execute")

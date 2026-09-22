@@ -81,3 +81,26 @@ def test_dedupe_drops_bootstrap_copies():
     obs = store.observations(("bootstrap",))
     assert len(obs) == 8
     assert len(dedupe(obs)) == 3  # Nested Loop / Hash Join / Merge Join plans
+
+
+def test_resolve_device():
+    from steerdb.models.tree_conv import resolve_device
+
+    assert resolve_device("cpu").type == "cpu"
+    assert resolve_device("auto").type == ("cuda" if torch.cuda.is_available() else "cpu")
+    if not torch.cuda.is_available():
+        with pytest.raises(RuntimeError):
+            resolve_device("cuda")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+def test_gpu_trained_model_loads_on_cpu(tmp_path):
+    store = build_store(synthetic_queries(4))
+    plans, lat = xy(store.observations(("bootstrap",)))
+    gpu = make_model("treecnn", n_members=1, epochs=5, device="cuda")
+    gpu.fit(plans, lat)
+    gpu.save(tmp_path / "m")
+    from steerdb.models.tree_conv import TreeCNNModel
+
+    cpu = TreeCNNModel.load(tmp_path / "m", device="cpu")
+    np.testing.assert_allclose(cpu.predict(plans)[0], gpu.predict(plans)[0], rtol=1e-3, atol=1e-3)
