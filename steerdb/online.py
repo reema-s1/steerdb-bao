@@ -30,6 +30,7 @@ from .evaluate import (
     stock_policy,
 )
 from .executor import execute
+from .log import log
 from .models import make_model
 from .plan_gen import candidate_plans
 from .selector import Selector
@@ -67,7 +68,7 @@ def online_loop(
     store: ExperienceStore | None = None,
     seed: int = 0,
     model_kwargs: dict | None = None,
-    log=print,
+    log=log,
 ) -> OnlineResult:
     live = conn is not None
     rng = random.Random(seed)

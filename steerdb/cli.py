@@ -12,9 +12,17 @@ from .arms import ARMS, get_arm, parse_arm_ids
 
 
 def _queries(args):
-    from .workload import load_workload
+    from .workload import Query, load_workload, template_of, template_sort_key
 
-    qs = load_workload(args.workload)
+    if getattr(args, "from_store", False):
+        # Evaluate/report from recorded experience alone: plans and latencies are in the store,
+        # so the SQL files are only needed to recover each query's template.
+        names = sorted(
+            _store(args).bootstrap_table(), key=lambda n: (template_sort_key(template_of(n)), n)
+        )
+        qs = [Query(n, template_of(n), "") for n in names]
+    else:
+        qs = load_workload(args.workload)
     if getattr(args, "queries", None):
         wanted = set(args.queries.split(","))
         qs = [q for q in qs if q.name in wanted]
@@ -215,6 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("oracle-gap", help="go/no-go: best arm vs stock Postgres")
     s.add_argument("--queries")
+    s.add_argument("--from-store", action="store_true")
     s.set_defaults(func=cmd_oracle_gap)
 
     s = sub.add_parser("train", help="train a value model on the train templates")
@@ -245,6 +254,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--online-train-epochs", type=int, default=25, help="Tree-CNN epochs per online retrain"
     )
     s.add_argument("--folds", type=int, default=5, help="leave-templates-out CV folds")
+    s.add_argument(
+        "--from-store",
+        action="store_true",
+        help="take the query list from the experience store instead of the SQL files",
+    )
     s.add_argument("--no-ablations", action="store_true")
     s.add_argument(
         "--overhead", action="store_true", help="measure planning/inference overhead (needs DB)"

@@ -1,6 +1,15 @@
-# steerdb
+# steerdb — Bao-style learned query-plan steering for PostgreSQL
 
-A learned **steering layer** for the PostgreSQL query optimizer, in the style of Bao (SIGMOD 2021).
+A Tree-CNN over `EXPLAIN` plans (PyTorch) that picks which planner hint set to run each query
+under, following **Bao** (Marcus et al., SIGMOD 2021) and the tree-convolution model of **Neo**
+(VLDB 2019), with a safety guard and a cross-validated evaluation harness.
+
+**Headline result (honest):** on the Join Order Benchmark the best-arm ceiling is only **8.5%**,
+so steering breaks even (**1.04× of stock Postgres**); on a harder cardinality-stressing
+workload the ceiling is **68.5%** and a single query is **33× faster** under the right hint set,
+but the learner does not yet capture it from ~150 training queries. The safety guard bounds a
+wrong choice at ~3× instead of the **2.5×-slower** behaviour an unguarded model showed.
+Full numbers: [docs/results.md](docs/results.md).
 
 steerdb doesn't replace the Postgres optimizer. For each query it asks Postgres for up to 8
 candidate plans, one per **hint set** (for example `enable_nestloop=off`), then uses a small

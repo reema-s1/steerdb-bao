@@ -31,6 +31,7 @@ from .evaluate import (
     regressions,
     stock_policy,
 )
+from .log import log
 from .models import CostModel
 from .online import online_loop
 from .selector import Selector
@@ -84,7 +85,7 @@ def evaluate_folds(
     seed: int = 0,
     model_kwargs: dict | None = None,
     train_fraction: float = 1.0,
-    log=print,
+    log=log,
 ) -> dict:
     """Train on each split's train side, predict its test side, merge all test predictions."""
     table = store.bootstrap_table()
@@ -166,7 +167,7 @@ def full_report(
     seed: int = 0,
     model_kwargs: dict | None = None,
     overhead: dict | None = None,
-    log=print,
+    log=log,
 ) -> dict:
     table = store.bootstrap_table()
     queries = [q for q in queries if q.name in table]

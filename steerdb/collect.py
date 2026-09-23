@@ -8,6 +8,7 @@ from pathlib import Path
 from . import config
 from .arms import ARMS, Arm
 from .executor import execute
+from .log import log
 from .plan_gen import explain, plan_hash
 from .store import ExperienceStore, Observation
 from .workload import Query
@@ -21,12 +22,11 @@ def collect(
     warmup: int = config.WARMUP_RUNS,
     runs: int = config.MEASURED_RUNS,
     timeout_ms: int = config.STATEMENT_TIMEOUT_MS,
-    log=None,
+    log=log,
     backup: Path | str | None = None,
 ) -> None:
     """Arms whose plan is identical to an already-executed arm of the same query are not
     re-executed; they reuse that measurement (same operator tree => same execution)."""
-    log = log or (lambda msg: print(msg, flush=True))
     total = len(queries) * len(arms)
     done = 0
     t_start = time.perf_counter()

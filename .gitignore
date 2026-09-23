@@ -23,3 +23,6 @@ Thumbs.db
 
 # Code bundle for uploading to Colab (git archive -o steerdb.zip HEAD)
 steerdb.zip
+
+# Personal / not for publication
+jd.md
