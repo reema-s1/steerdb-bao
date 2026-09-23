@@ -146,7 +146,8 @@ def regressions(res: PolicyResult, stock: PolicyResult, oracle: PolicyResult) ->
 
 
 def oracle_gap(table: Table, queries: list[str], arm_ids=tuple(a.id for a in ARMS)) -> dict:
-    """Go/no-go check (design doc section 10): how much faster is the best arm than arm 0?"""
+    """Go/no-go check: how much faster is the best arm than arm 0? Below ~15% there is no
+    headroom worth modelling on this workload."""
     qs = complete_queries(table, queries, arm_ids)
     stock = stock_policy(table, qs)
     oracle = oracle_policy(table, qs, arm_ids)

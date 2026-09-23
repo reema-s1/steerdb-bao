@@ -1,6 +1,6 @@
 """Choose a plan among candidates: greedy argmin, Thompson sampling, plus the safety guard.
 
-Safety guard (design doc section 6.6):
+Safety guard:
   1. Untrained model -> arm 0.
   2. Pessimistic deviation (exploit mode): leave arm 0 only if the predicted speedup still
      exceeds `min_gain` after subtracting `guard_k` standard deviations of the ensemble's

@@ -23,9 +23,7 @@ SQL ─▶ plan under K hint sets (EXPLAIN, no execution) ─▶ featurize plan 
     ─▶ execute ─▶ record (plan, latency) ─▶ periodic retrain
 ```
 
-The full design (goals, alternatives, evaluation plan, risks) is in
-[ml_query_optimizer_design.md](ml_query_optimizer_design.md).
-Results are in [docs/results.md](docs/results.md).
+Results, ablations and figures are in [docs/results.md](docs/results.md).
 
 ## Quickstart
 
@@ -116,7 +114,7 @@ Point any command at several workloads with `--workload workload/job,workload/ce
 
 Why CEB: on JOB with Postgres 16, foreign-key indexes and a warm cache, stock Postgres was
 already the best arm for 105 of 113 queries. The best-arm oracle was only 8.5% faster in total,
-below the design doc's 15% go/no-go bar. CEB was designed to produce the cardinality
+below this project's 15% go/no-go bar. CEB was designed to produce the cardinality
 misestimates that make plan choice matter.
 
 ## Components
@@ -169,7 +167,7 @@ misestimates that make plan choice matter.
   by a model that never saw its template. CEB queries are grouped by join graph (`ceb9a_*` and
   `ceb9b_*` share a fold). Variants such as `16a`/`16b`/`16c` are near-duplicates, so a random
   split would leak; the report shows that leaky split next to the honest one.
-- **Why not one fixed split.** The design doc's split (train JOB 1–25, test 26–33) turned out
+- **Why not one fixed split.** The conventional split (train JOB 1–25, test 26–33) turned out
   lopsided: JOB's templates grow with their number, so 18 of the 23 test queries join 12 or
   more tables, versus 2 of the 90 training queries. That tests extrapolation to unseen plan
   shapes, not the typical case, and it leaves just 23 queries to measure with.
@@ -215,7 +213,7 @@ pytest -q                 # unit tests, no database needed
 ruff check . && ruff format --check .
 ```
 
-The tests cover the design doc's featurization worked example, arm definitions, plan-hash
+The tests cover the featurization worked example, arm definitions, plan-hash
 deduplication, selector and guard behavior, Tree-CNN mechanics (child gathering, batching,
 per-plan pooling), model save/load, the offline evaluator (including the simulated timeout
 fallback), and the online loop on a synthetic latency table with known headroom.

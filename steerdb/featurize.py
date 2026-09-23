@@ -1,6 +1,6 @@
 """Featurization: EXPLAIN JSON plan tree -> per-node vectors (Tree-CNN) or a flat summary (LightGBM).
 
-Node vector layout (design doc section 6.3):
+Node vector layout:
     [ node-type one-hot | log1p(rows) z | log1p(cost) z | width z | relation one-hot | has_filter, has_index_cond ]
 """
 

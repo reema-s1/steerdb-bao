@@ -1,4 +1,4 @@
-"""Load workloads (JOB, CEB) and split them by template (never randomly, see design doc section 5).
+"""Load workloads (JOB, CEB) and split them by template, never randomly (variants leak).
 
 Query names and their template groups:
     JOB  16b       -> template "16"

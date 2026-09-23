@@ -26,7 +26,7 @@ SESSION_SETTINGS: dict[str, str] = {
     "jit": "off",
 }
 
-# Measurement hygiene (design doc section 5)
+# Measurement hygiene: warm cache, discard a warm-up run, take the median
 WARMUP_RUNS = int(os.environ.get("STEERDB_WARMUP", "1"))
 MEASURED_RUNS = int(os.environ.get("STEERDB_RUNS_PER_QUERY", "3"))
 STATEMENT_TIMEOUT_MS = int(os.environ.get("STEERDB_TIMEOUT_MS", str(5 * 60 * 1000)))
